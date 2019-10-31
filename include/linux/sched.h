@@ -68,6 +68,7 @@ void su_exec(void);
 void su_exit(void);
 
 #define SCHED_ATTR_SIZE_VER0	48	/* sizeof first published struct */
+#define SCHED_ATTR_SIZE_VER1	56	/* add: util_{min,max} */
 
 /*
  * Extended scheduling parameters data structure.
@@ -129,6 +130,9 @@ struct sched_attr {
 	u64 sched_runtime;
 	u64 sched_deadline;
 	u64 sched_period;
+	
+	__u32 sched_util_min;
+	__u32 sched_util_max;
 };
 
 struct futex_pi_state;
