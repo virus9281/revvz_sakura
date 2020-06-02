@@ -595,6 +595,13 @@ static inline void clear_tlb_flush_pending(struct mm_struct *mm)
 
 struct vm_fault;
 
+/**
+ * typedef vm_fault_t - Return type for page fault handlers.
+ *
+ * Page fault handlers return a bitmask of %VM_FAULT values.
+ */
+typedef __bitwise unsigned int vm_fault_t;
+
 struct vm_special_mapping {
 	const char *name;	/* The name, e.g. "[vdso]". */
 
