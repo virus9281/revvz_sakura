@@ -815,6 +815,27 @@ unsigned int sysctl_sched_uclamp_util_min = SCHED_CAPACITY_SCALE;
 /* Max allowed maximum utilization */
 unsigned int sysctl_sched_uclamp_util_max = SCHED_CAPACITY_SCALE;
 
+/*
+ * By default RT tasks run at the maximum performance point/capacity of the
+ * system. Uclamp enforces this by always setting UCLAMP_MIN of RT tasks to
+ * SCHED_CAPACITY_SCALE.
+ *
+ * This knob allows admins to change the default behavior when uclamp is being
+ * used. In battery powered devices, particularly, running at the maximum
+ * capacity and frequency will increase energy consumption and shorten the
+ * battery life.
+ *
+ * This knob only affects the default value RT has when a new RT task is
+ * forked or has just changed policy to RT, given the user hasn't modified the
+ * uclamp.min value of the task via sched_setattr().
+ *
+ * This knob will not override the system default sched_util_clamp_min defined
+ * above.
+ *
+ * Any modification is applied lazily on the next RT task wakeup.
+ */
+unsigned int sysctl_sched_rt_default_uclamp_util_min = SCHED_CAPACITY_SCALE;
+
 /* All clamps are required to be less or equal than these values */
 static struct uclamp_se uclamp_default[UCLAMP_CNT];
 
@@ -942,6 +963,14 @@ uclamp_eff_get(struct task_struct *p, enum uclamp_id clamp_id)
 	return uc_req;
 }
 
+static void uclamp_rt_sync_default_util_min(struct task_struct *p)
+{
+	struct uclamp_se *uc_se = &p->uclamp_req[UCLAMP_MIN];
+
+	if (!uc_se->user_defined)
+		uclamp_se_set(uc_se, sysctl_sched_rt_default_uclamp_util_min, false);
+}
+
 enum uclamp_id uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id)
 {
 	struct uclamp_se uc_eff;
@@ -1048,6 +1077,12 @@ static inline void uclamp_rq_inc(struct rq *rq, struct task_struct *p)
 	if (unlikely(!p->sched_class->uclamp_enabled))
 		return;
 
+	/*
+	 * When sysctl_sched_rt_default_uclamp_util_min value is changed by the
+	 * user, we apply any new value on the next wakeup, which is here.
+	 */
+	uclamp_rt_sync_default_util_min(p);
+
 	for_each_clamp_id(clamp_id)
 		uclamp_rq_inc_id(rq, p, clamp_id);
 
@@ -1089,7 +1124,7 @@ uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
 	 * affecting a valid clamp bucket, the next time it's enqueued,
 	 * it will already see the updated clamp bucket value.
 	 */
-	if (!p->uclamp[clamp_id].active) {
+	if (p->uclamp[clamp_id].active) {
 		uclamp_rq_dec_id(rq, p, clamp_id);
 		uclamp_rq_inc_id(rq, p, clamp_id);
 	}
@@ -1139,12 +1174,13 @@ int sysctl_sched_uclamp_handler(struct ctl_table *table, int write,
 				loff_t *ppos)
 {
 	bool update_root_tg = false;
-	int old_min, old_max;
+	int old_min, old_max, old_rt_min;
 	int result;
 
 	mutex_lock(&uclamp_mutex);
 	old_min = sysctl_sched_uclamp_util_min;
 	old_max = sysctl_sched_uclamp_util_max;
+	old_rt_min = sysctl_sched_rt_default_uclamp_util_min;
 
 	result = proc_dointvec(table, write, buffer, lenp, ppos);
 	if (result)
@@ -1152,8 +1188,19 @@ int sysctl_sched_uclamp_handler(struct ctl_table *table, int write,
 	if (!write)
 		goto done;
 
+	/*
+	 * The new value will be applied to all RT tasks the next time they
+	 * wakeup, assuming the task is using the system default and not a user
+	 * specified value. In the latter we shall leave the value as the user
+	 * requested.
+	 */
 	if (sysctl_sched_uclamp_util_min > sysctl_sched_uclamp_util_max ||
 	    sysctl_sched_uclamp_util_max > SCHED_CAPACITY_SCALE) {
+		result = -EINVAL;
+		goto undo;
+	}
+
+	if (sysctl_sched_rt_default_uclamp_util_min > SCHED_CAPACITY_SCALE) {
 		result = -EINVAL;
 		goto undo;
 	}
@@ -1183,6 +1230,7 @@ int sysctl_sched_uclamp_handler(struct ctl_table *table, int write,
 undo:
 	sysctl_sched_uclamp_util_min = old_min;
 	sysctl_sched_uclamp_util_max = old_max;
+	sysctl_sched_rt_default_uclamp_util_min = old_rt_min;
 done:
 	mutex_unlock(&uclamp_mutex);
 
@@ -1225,9 +1273,14 @@ static void __setscheduler_uclamp(struct task_struct *p,
 		if (uc_se->user_defined)
 			continue;
 
-		/* By default, RT tasks always get 100% boost */
+		/*
+		 * By default, RT tasks always get 100% boost, which the admins
+		 * are allowed to change via
+		 * sysctl_sched_rt_default_uclamp_util_min knob.
+		 */
 		if (unlikely(rt_task(p) && clamp_id == UCLAMP_MIN))
-			clamp_value = uclamp_none(UCLAMP_MAX);
+			clamp_value = sysctl_sched_rt_default_uclamp_util_min;
+			clamp_value = sysctl_sched_rt_default_uclamp_util_min;
 
 		uclamp_se_set(uc_se, clamp_value, false);
 	}
@@ -1256,15 +1309,9 @@ static void uclamp_fork(struct task_struct *p)
 	if (likely(!p->sched_reset_on_fork))
 		return;
 
-	for_each_clamp_id(clamp_id) {
-		unsigned int clamp_value = uclamp_none(clamp_id);
-
-		/* By default, RT tasks always get 100% boost */
-		if (unlikely(rt_task(p) && clamp_id == UCLAMP_MIN))
-			clamp_value = uclamp_none(UCLAMP_MAX);
-
-		uclamp_se_set(&p->uclamp_req[clamp_id], clamp_value, false);
-	}
+	for_each_clamp_id(clamp_id)
+		uclamp_se_set(&p->uclamp_req[clamp_id], uclamp_none(clamp_id), false);
+	
 }
 
 static void __init init_uclamp(void)
@@ -1276,7 +1323,7 @@ static void __init init_uclamp(void)
 	mutex_init(&uclamp_mutex);
 
 	for_each_possible_cpu(cpu) {
-		memset(&cpu_rq(cpu)->uclamp, 0, sizeof(struct uclamp_rq));
+		memset(&cpu_rq(cpu)->uclamp, 0, sizeof(struct uclamp_rq)*UCLAMP_CNT);
 		cpu_rq(cpu)->uclamp_flags = 0;
 	}
 

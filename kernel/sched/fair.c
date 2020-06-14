@@ -6239,6 +6239,7 @@ static inline bool __task_fits(struct task_struct *p, int cpu, int util)
 	unsigned int margin;
 
 	util += boosted_task_util(p);
+	util = max(uclamp_eff_value(p, UCLAMP_MIN), util); 
 
 	if (capacity_orig_of(task_cpu(p)) > capacity_orig_of(cpu))
 		margin = sysctl_sched_capacity_margin_down;
@@ -6370,9 +6371,12 @@ boosted_task_util(struct task_struct *p)
 	unsigned long util = task_util(p);
 	long margin = schedtune_task_margin(p);
 
+	unsigned long util_min = uclamp_eff_value(p, UCLAMP_MIN);
+	unsigned long util_max = uclamp_eff_value(p, UCLAMP_MAX);
+
 	trace_sched_boost_task(p, util, margin);
 
-	return util + margin;
+	return clamp(util, util_min, util_max);	
 }
 
 static unsigned long capacity_spare_wake(int cpu, struct task_struct *p)
@@ -7028,8 +7032,9 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 				   bool boosted, bool prefer_idle,
 				   struct find_best_target_env *fbt_env)
 {
-	unsigned long min_util = boosted_task_util(p);
 	unsigned long target_capacity = ULONG_MAX;
+	unsigned long min_util = uclamp_eff_value(p, UCLAMP_MIN);
+	unsigned long max_util = uclamp_eff_value(p, UCLAMP_MAX);
 	unsigned long min_wake_util = ULONG_MAX;
 	unsigned long target_max_spare_cap = 0;
 	unsigned long target_util = ULONG_MAX;
@@ -7141,7 +7146,9 @@ retry:
 			 * The target CPU can be already at a capacity level higher
 			 * than the one required to boost the task.
 			 */
-			new_util = max(min_util, new_util);
+			new_util = clamp(new_util, min_util, max_util);
+			if (new_util > capacity_of(i))
+				continue;
 
 			/*
 			 * Include minimum capacity constraint:
@@ -7597,7 +7604,7 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 		goto out;
 	}
 
-	if (fbt_env.placement_boost || fbt_env.need_idle ||
+	if (uclamp_eff_value(p,UCLAMP_MIN) > capacity_of(prev_cpu) || fbt_env.placement_boost || fbt_env.need_idle ||
 			fbt_env.avoid_prev_cpu || (rtg_target &&
 			(!cpumask_test_cpu(prev_cpu, rtg_target) ||
 				cpumask_test_cpu(next_cpu, rtg_target)))) {
