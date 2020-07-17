@@ -5004,8 +5004,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 #ifdef CONFIG_SMP
 	int task_new = flags & ENQUEUE_WAKEUP_NEW;
 #endif
-	bool prefer_idle = sched_feat(EAS_USE_NEED_IDLE) ?
-				(schedtune_prefer_idle(p) > 0) : 0;
+	bool prefer_idle = uclamp_latency_sensitive(p);
 
 #ifdef CONFIG_SCHED_WALT
 	p->misfit = !task_fits_max(p, rq->cpu);
@@ -6283,7 +6282,7 @@ static inline bool __task_fits(struct task_struct *p, int cpu, int util)
 	unsigned int margin;
 
 	util += boosted_task_util(p);
-	util = max(uclamp_eff_value(p, UCLAMP_MIN), util); 
+	util = max((int)uclamp_eff_value(p, UCLAMP_MIN), util); 
 
 	if (capacity_orig_of(task_cpu(p)) > capacity_orig_of(cpu))
 		margin = sysctl_sched_capacity_margin_down;
@@ -7615,12 +7614,12 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 	boosted = schedtune_task_boost(p) > 0;
 	prefer_idle = schedtune_prefer_idle(p) > 0;
 #else
-	boosted = get_sysctl_sched_cfs_boost() > 0;
-	prefer_idle = 0;
+	boosted = uclamp_boosted(p) > 0;
+	prefer_idle = uclamp_latency_sensitive(p) > 0;
 #endif
 
 	fbt_env.rtg_target = rtg_target;
-	if (sched_feat(EAS_USE_NEED_IDLE) && prefer_idle) {
+	if (prefer_idle) {
 		fbt_env.need_idle = true;
 		prefer_idle = false;
 	} else {
