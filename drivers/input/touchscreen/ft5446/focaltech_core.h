@@ -65,6 +65,7 @@
 #include <linux/unistd.h>
 #include <linux/ioctl.h>
 #include <linux/vmalloc.h>
+#include <linux/pm_qos.h>
 #include "focaltech_common.h"
 
 /*****************************************************************************
@@ -165,6 +166,7 @@ struct fts_ts_data {
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
     struct early_suspend early_suspend;
 #endif
+    struct pm_qos_request pm_qos_req;
 };
 
 /*****************************************************************************

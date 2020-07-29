@@ -50,6 +50,7 @@
 #endif
 #include <linux/usb.h>
 #include <linux/power_supply.h>
+#include <linux/pm_qos.h>
 
 #define CONFIG_TOUCHSCREEN_GT9XX_UPDATE
 #define CONFIG_TOUCHSCREEN_GT9XX_TOOL
@@ -178,6 +179,7 @@ struct goodix_ts_data {
 	bool force_update;
 	bool init_done;
 	u16 pre_touch;
+	struct pm_qos_request pm_qos_req;
 };
 
 /************************* PART2:TODO define *******************************/

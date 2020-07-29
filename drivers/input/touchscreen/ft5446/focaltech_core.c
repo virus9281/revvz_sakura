@@ -876,6 +876,9 @@ static irqreturn_t fts_ts_interrupt(int irq, void *data)
 	fts_esdcheck_set_intr(1);
 #endif
 
+	/* prevent CPU from entering deep sleep */
+	pm_qos_update_request(&ts_data->pm_qos_req, 100);
+
 	ret = fts_read_touchdata(ts_data);
 	if (ret == 0) {
 		mutex_lock(&ts_data->report_mutex);
@@ -886,6 +889,8 @@ static irqreturn_t fts_ts_interrupt(int irq, void *data)
 #if FTS_ESDCHECK_EN
 	fts_esdcheck_set_intr(0);
 #endif
+
+	pm_qos_update_request(&ts_data->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 
 	return IRQ_HANDLED;
 }
@@ -1393,7 +1398,6 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	}
 #endif
 #endif
-
 	ret = fts_gpio_configure(ts_data);
 	if (ret) {
 		FTS_ERROR("[GPIO]Failed to configure the gpios");
@@ -1403,6 +1407,11 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 #if (!FTS_CHIP_IDC)
 	fts_reset_proc(200);
 #endif
+	
+	ts_data->pm_qos_req.type = PM_QOS_REQ_AFFINE_IRQ;
+	ts_data->pm_qos_req.irq  = ts_data->irq; 
+	pm_qos_add_request(&ts_data->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
+		PM_QOS_DEFAULT_VALUE);
 
 	ret = fts_get_ic_information(ts_data);
 	if (ret) {
@@ -1456,7 +1465,6 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 		FTS_ERROR("init esd check fail");
 	}
 #endif
-
 	ret = fts_irq_registration(ts_data);
 	if (ret) {
 		FTS_ERROR("request irq failed");
@@ -1501,6 +1509,7 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	return 0;
 
 err_irq_req:
+	pm_qos_remove_request(&ts_data->pm_qos_req);
 	if (gpio_is_valid(pdata->reset_gpio))
 		gpio_free(pdata->reset_gpio);
 	if (gpio_is_valid(pdata->irq_gpio))
@@ -1575,6 +1584,8 @@ static int fts_ts_remove(struct i2c_client *client)
 
 	free_irq(client->irq, ts_data);
 	input_unregister_device(ts_data->input_dev);
+	
+	pm_qos_remove_request(&ts_data->pm_qos_req);
 
 	if (gpio_is_valid(ts_data->pdata->reset_gpio))
 		gpio_free(ts_data->pdata->reset_gpio);

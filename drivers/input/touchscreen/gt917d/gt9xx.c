@@ -732,8 +732,14 @@ static enum hrtimer_restart gtp_timer_handler(struct hrtimer *timer)
 static irqreturn_t gtp_irq_handler(int irq, void *dev_id)
 {
 	struct goodix_ts_data *ts = dev_id;
+	
+	/* prevent CPU from entering deep sleep */
+	pm_qos_update_request(&ts->pm_qos_req, 100);
 
 	gtp_work_func(ts);
+	
+	pm_qos_update_request(&ts->pm_qos_req, PM_QOS_DEFAULT_VALUE);
+
 	return IRQ_HANDLED;
 }
 
@@ -2324,7 +2330,7 @@ static int gtp_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	}
 
 	dev_info(&client->dev, "I2C Addr is %x\n", client->addr);
-
+	
 	ret = gtp_get_fw_info(client, &ts->fw_info);
 	if (ret < 0) {
 		dev_err(&client->dev, "Failed read FW version\n");
@@ -2336,7 +2342,7 @@ static int gtp_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	ret = gtp_init_panel(ts);
 	if (ret < 0)
 		dev_info(&client->dev, "Panel un-initialize\n");
-
+	
 	ret = gtp_request_input_dev(ts);
 	if (ret < 0) {
 		dev_err(&client->dev, "Failed request input device\n");
@@ -2344,6 +2350,11 @@ static int gtp_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	}
 
 	mutex_init(&ts->lock);
+	
+	ts->pm_qos_req.type = PM_QOS_REQ_AFFINE_IRQ;
+	ts->pm_qos_req.irq  = ts->client->irq;
+	pm_qos_add_request(&ts->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
+		PM_QOS_DEFAULT_VALUE);
 
 	ret = gtp_request_irq(ts);
 	if (ret < 0) {
@@ -2403,6 +2414,7 @@ exit_powermanager:
 	gtp_unregister_powermanager(ts);
 exit_unreg_input_dev:
 	input_unregister_device(ts->input_dev);
+	pm_qos_remove_request(&ts->pm_qos_req);
 exit_free_io_port:
 	if (gpio_is_valid(ts->pdata->rst_gpio)) {
 		gpio_direction_output(ts->pdata->rst_gpio, 0);
@@ -2466,6 +2478,8 @@ static int gtp_drv_remove(struct i2c_client *client)
 	input_unregister_device(ts->input_dev);
 	mutex_destroy(&ts->lock);
 
+	pm_qos_remove_request(&ts->pm_qos_req);
+	
 	devm_kfree(&client->dev, ts->pdata);
 	devm_kfree(&client->dev, ts);
 
