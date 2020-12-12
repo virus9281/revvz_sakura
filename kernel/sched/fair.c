@@ -6415,14 +6415,13 @@ static inline unsigned long
 boosted_task_util(struct task_struct *p)
 {
 	unsigned long util = task_util(p);
-	long margin = schedtune_task_margin(p);
-
 	unsigned long util_min = uclamp_eff_value(p, UCLAMP_MIN);
 	unsigned long util_max = uclamp_eff_value(p, UCLAMP_MAX);
+	long margin = schedtune_task_margin(p);
 
 	trace_sched_boost_task(p, util, margin);
 
-	return clamp(util, util_min, util_max);	
+	return clamp(util, util_min, util_max);
 }
 
 static unsigned long capacity_spare_wake(int cpu, struct task_struct *p)
@@ -7167,14 +7166,6 @@ enum fastpaths {
 	SYNC_WAKEUP,
 	PREV_CPU_FASTPATH,
 };
-static unsigned int uclamp_task_util(struct task_struct *p)
-{
-	unsigned int min_util = uclamp_eff_value(p, UCLAMP_MIN);
-	unsigned int max_util = uclamp_eff_value(p, UCLAMP_MAX);
-	unsigned int est_util = task_util(p);
-
-	return clamp(est_util, min_util, max_util);
-}
 
 unsigned int sched_smp_overlap_capacity;
 static inline int find_best_target(struct task_struct *p, int *backup_cpu,
@@ -7182,8 +7173,6 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 				   struct find_best_target_env *fbt_env)
 {
 	unsigned long target_capacity = ULONG_MAX;
-	unsigned long min_util = uclamp_eff_value(p, UCLAMP_MIN);
-	unsigned long max_util = uclamp_eff_value(p, UCLAMP_MAX);
 	unsigned long min_wake_util = ULONG_MAX;
 	unsigned long target_max_spare_cap = 0;
 	unsigned long target_util = ULONG_MAX;
@@ -7237,7 +7226,7 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 			target_cpu = -1;
 
 			fbt_env->fastpath = PREV_CPU_FASTPATH;
-			trace_sched_find_best_target(p, prefer_idle, min_util,
+			trace_sched_find_best_target(p, prefer_idle, -1,
 					cpu, -1, -1, target_cpu, -1);
 			goto out;
 		}
@@ -7260,7 +7249,7 @@ retry:
 		while ((i = cpumask_next(i, &search_cpus)) < nr_cpu_ids) {
 			unsigned long capacity_curr = capacity_curr_of(i);
 			unsigned long capacity_orig = capacity_orig_of(i);
-			unsigned long wake_util, new_util, min_capped_util;
+			unsigned long wake_util, new_util, boosted_util, min_capped_util;
 
 			cpumask_clear_cpu(i, &search_cpus);
 
@@ -7295,7 +7284,8 @@ retry:
 			 * The target CPU can be already at a capacity level higher
 			 * than the one required to boost the task.
 			 */
-			new_util = clamp(new_util, min_util, max_util);
+			boosted_util = boosted_task_util(p);
+			new_util = max(boosted_util, new_util);
 			if (new_util > capacity_of(i))
 				continue;
 
@@ -7350,7 +7340,7 @@ retry:
 					schedstat_inc(this_rq()->eas_stats.fbt_pref_idle);
 
 					trace_sched_find_best_target(p,
-							prefer_idle, min_util,
+							prefer_idle, -1,
 							cpu, best_idle_cpu,
 							best_active_cpu,
 							i, -1);
@@ -7429,7 +7419,7 @@ retry:
 				int idle_idx = idle_get_state_idx(cpu_rq(i));
 
 				/* Skip CPUs which do not fit task requirements */
-				if (capacity_orig < uclamp_task_util(p))
+				if (capacity_orig < task_util(p))
 					continue;
 				
 				/* Favor CPUs that won't end up running at a
@@ -7611,7 +7601,7 @@ retry:
 	}
 
 out:
-	trace_sched_find_best_target(p, prefer_idle, min_util, cpu,
+	trace_sched_find_best_target(p, prefer_idle, -1, cpu,
 				     best_idle_cpu, best_active_cpu,
 				     target_cpu, *backup_cpu);
 
@@ -7640,7 +7630,7 @@ static int wake_cap(struct task_struct *p, int cpu, int prev_cpu)
 	/* Bring task utilization in sync with prev_cpu */
 	sync_entity_load_avg(&p->se);
 
-	return min_cap * 1024 < uclamp_task_util(p) * capacity_margin;
+	return min_cap * 1024 < task_util(p) * capacity_margin;
 }
 
 static inline int wake_to_idle(struct task_struct *p)
